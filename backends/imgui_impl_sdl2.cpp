@@ -272,6 +272,18 @@ static void ImGui_ImplSDL2_UpdateKeyModifiers(SDL_Keymod sdl_key_mods)
     io.AddKeyEvent(ImGuiMod_Super, (sdl_key_mods & KMOD_GUI) != 0);
 }
 
+static void MapButton(ImGuiKey key, Uint8 state)
+{
+    ImGui::GetIO().AddKeyEvent(key, state == SDL_PRESSED);
+}
+
+static void MapAnalog(ImGuiKey key, int value, int v0, int v1)
+{
+    float vn = (float)(value - v0) / (float)(v1 - v0);
+    vn = std::max(std::min(vn, 1.0f), 0.0f);
+    ImGui::GetIO().AddKeyAnalogEvent(key, vn > 0.1f, vn);
+}
+
 // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
 // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application, or clear/overwrite your copy of the mouse data.
 // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application, or clear/overwrite your copy of the keyboard data.
@@ -358,6 +370,100 @@ bool ImGui_ImplSDL2_ProcessEvent(const SDL_Event* event)
             else if (event->window.event == SDL_WINDOWEVENT_FOCUS_LOST)
                 io.AddFocusEvent(false);
             return true;
+        }
+        case SDL_CONTROLLERDEVICEADDED:
+        {
+            SDL_GameControllerOpen(event->jdevice.which);
+            ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_HasGamepad;
+            return true;
+        }
+        case SDL_CONTROLLERDEVICEREMOVED:
+        {
+            SDL_GameControllerClose(SDL_GameControllerFromInstanceID(event->jdevice.which));
+            return true;
+        }
+        case SDL_CONTROLLERBUTTONDOWN:
+        case SDL_CONTROLLERBUTTONUP:
+        {
+            Uint8 button = event->cbutton.button;
+            Uint8 state = event->cbutton.state;
+
+            bool valid_control = true;
+            if (button == SDL_CONTROLLER_BUTTON_START)
+                MapButton(ImGuiKey_GamepadStart, state);
+            else if (button == SDL_CONTROLLER_BUTTON_BACK)
+                MapButton(ImGuiKey_GamepadBack, state);
+            else if (button == SDL_CONTROLLER_BUTTON_X)
+                MapButton(ImGuiKey_GamepadFaceLeft, state); // Xbox X, PS Square
+            else if (button == SDL_CONTROLLER_BUTTON_B)
+                MapButton(ImGuiKey_GamepadFaceRight, state); // Xbox B, PS Circle
+            else if (button == SDL_CONTROLLER_BUTTON_Y)
+                MapButton(ImGuiKey_GamepadFaceUp, state); // Xbox Y, PS Triangle
+            else if (button == SDL_CONTROLLER_BUTTON_A)
+                MapButton(ImGuiKey_GamepadFaceDown, state); // Xbox A, PS Cross
+            else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT)
+                MapButton(ImGuiKey_GamepadDpadLeft, state);
+            else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT)
+                MapButton(ImGuiKey_GamepadDpadRight, state);
+            else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP)
+                MapButton(ImGuiKey_GamepadDpadUp, state);
+            else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+                MapButton(ImGuiKey_GamepadDpadDown, state);
+            else if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER)
+                MapButton(ImGuiKey_GamepadL1, state);
+            else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
+                MapButton(ImGuiKey_GamepadR1, state);
+            else if (button == SDL_CONTROLLER_BUTTON_LEFTSTICK)
+                MapButton(ImGuiKey_GamepadL3, state);
+            else if (button == SDL_CONTROLLER_BUTTON_RIGHTSTICK)
+                MapButton(ImGuiKey_GamepadR3, state);
+            else
+                valid_control = false;
+            
+            return valid_control;
+        }
+        case SDL_CONTROLLERAXISMOTION:
+        {
+            constexpr int thumb_dead_zone = 8000; // SDL_gamecontroller.h suggests using this value.
+
+            Uint8 axis = event->caxis.axis;
+            Sint16 value = event->caxis.value;
+            bool valid_control = true;
+
+            if (axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT)
+            {
+                MapAnalog(ImGuiKey_GamepadL2, value, 0, 32767);
+            }
+            else if (axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT)
+            {
+                MapAnalog(ImGuiKey_GamepadR2, value, 0, 32767);
+            }
+            else if (axis == SDL_CONTROLLER_AXIS_LEFTX)
+            {
+                MapAnalog(ImGuiKey_GamepadLStickLeft, value, -thumb_dead_zone, -32768);
+                MapAnalog(ImGuiKey_GamepadLStickRight, value, +thumb_dead_zone, +32767);
+            }
+            else if (axis == SDL_CONTROLLER_AXIS_LEFTY)
+            {
+                MapAnalog(ImGuiKey_GamepadLStickUp, value, -thumb_dead_zone, -32768);
+                MapAnalog(ImGuiKey_GamepadLStickDown, value, +thumb_dead_zone, +32767);
+            }
+            else if (axis == SDL_CONTROLLER_AXIS_RIGHTX)
+            {
+                MapAnalog(ImGuiKey_GamepadRStickLeft, value, -thumb_dead_zone, -32768);
+                MapAnalog(ImGuiKey_GamepadRStickRight, value, +thumb_dead_zone, +32767);
+            }
+            else if (axis == SDL_CONTROLLER_AXIS_RIGHTY)
+            {
+                MapAnalog(ImGuiKey_GamepadRStickUp, value, -thumb_dead_zone, -32768);
+                MapAnalog(ImGuiKey_GamepadRStickDown, value, +thumb_dead_zone, +32767);
+            }
+            else
+            {
+                valid_control = false;
+            }
+
+            return valid_control;
         }
     }
     return false;
@@ -552,52 +658,6 @@ static void ImGui_ImplSDL2_UpdateMouseCursor()
     }
 }
 
-static void ImGui_ImplSDL2_UpdateGamepads()
-{
-    ImGuiIO& io = ImGui::GetIO();
-    if ((io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) == 0) // FIXME: Technically feeding gamepad shouldn't depend on this now that they are regular inputs.
-        return;
-
-    // Get gamepad
-    io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
-    SDL_GameController* game_controller = SDL_GameControllerOpen(0);
-    if (!game_controller)
-        return;
-    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
-
-    // Update gamepad inputs
-    #define IM_SATURATE(V)                      (V < 0.0f ? 0.0f : V > 1.0f ? 1.0f : V)
-    #define MAP_BUTTON(KEY_NO, BUTTON_NO)       { io.AddKeyEvent(KEY_NO, SDL_GameControllerGetButton(game_controller, BUTTON_NO) != 0); }
-    #define MAP_ANALOG(KEY_NO, AXIS_NO, V0, V1) { float vn = (float)(SDL_GameControllerGetAxis(game_controller, AXIS_NO) - V0) / (float)(V1 - V0); vn = IM_SATURATE(vn); io.AddKeyAnalogEvent(KEY_NO, vn > 0.1f, vn); }
-    const int thumb_dead_zone = 8000;           // SDL_gamecontroller.h suggests using this value.
-    MAP_BUTTON(ImGuiKey_GamepadStart,           SDL_CONTROLLER_BUTTON_START);
-    MAP_BUTTON(ImGuiKey_GamepadBack,            SDL_CONTROLLER_BUTTON_BACK);
-    MAP_BUTTON(ImGuiKey_GamepadFaceLeft,        SDL_CONTROLLER_BUTTON_X);              // Xbox X, PS Square
-    MAP_BUTTON(ImGuiKey_GamepadFaceRight,       SDL_CONTROLLER_BUTTON_B);              // Xbox B, PS Circle
-    MAP_BUTTON(ImGuiKey_GamepadFaceUp,          SDL_CONTROLLER_BUTTON_Y);              // Xbox Y, PS Triangle
-    MAP_BUTTON(ImGuiKey_GamepadFaceDown,        SDL_CONTROLLER_BUTTON_A);              // Xbox A, PS Cross
-    MAP_BUTTON(ImGuiKey_GamepadDpadLeft,        SDL_CONTROLLER_BUTTON_DPAD_LEFT);
-    MAP_BUTTON(ImGuiKey_GamepadDpadRight,       SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
-    MAP_BUTTON(ImGuiKey_GamepadDpadUp,          SDL_CONTROLLER_BUTTON_DPAD_UP);
-    MAP_BUTTON(ImGuiKey_GamepadDpadDown,        SDL_CONTROLLER_BUTTON_DPAD_DOWN);
-    MAP_BUTTON(ImGuiKey_GamepadL1,              SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
-    MAP_BUTTON(ImGuiKey_GamepadR1,              SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
-    MAP_ANALOG(ImGuiKey_GamepadL2,              SDL_CONTROLLER_AXIS_TRIGGERLEFT,  0.0f, 32767);
-    MAP_ANALOG(ImGuiKey_GamepadR2,              SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 0.0f, 32767);
-    MAP_BUTTON(ImGuiKey_GamepadL3,              SDL_CONTROLLER_BUTTON_LEFTSTICK);
-    MAP_BUTTON(ImGuiKey_GamepadR3,              SDL_CONTROLLER_BUTTON_RIGHTSTICK);
-    MAP_ANALOG(ImGuiKey_GamepadLStickLeft,      SDL_CONTROLLER_AXIS_LEFTX,  -thumb_dead_zone, -32768);
-    MAP_ANALOG(ImGuiKey_GamepadLStickRight,     SDL_CONTROLLER_AXIS_LEFTX,  +thumb_dead_zone, +32767);
-    MAP_ANALOG(ImGuiKey_GamepadLStickUp,        SDL_CONTROLLER_AXIS_LEFTY,  -thumb_dead_zone, -32768);
-    MAP_ANALOG(ImGuiKey_GamepadLStickDown,      SDL_CONTROLLER_AXIS_LEFTY,  +thumb_dead_zone, +32767);
-    MAP_ANALOG(ImGuiKey_GamepadRStickLeft,      SDL_CONTROLLER_AXIS_RIGHTX, -thumb_dead_zone, -32768);
-    MAP_ANALOG(ImGuiKey_GamepadRStickRight,     SDL_CONTROLLER_AXIS_RIGHTX, +thumb_dead_zone, +32767);
-    MAP_ANALOG(ImGuiKey_GamepadRStickUp,        SDL_CONTROLLER_AXIS_RIGHTY, -thumb_dead_zone, -32768);
-    MAP_ANALOG(ImGuiKey_GamepadRStickDown,      SDL_CONTROLLER_AXIS_RIGHTY, +thumb_dead_zone, +32767);
-    #undef MAP_BUTTON
-    #undef MAP_ANALOG
-}
-
 void ImGui_ImplSDL2_NewFrame()
 {
     ImGui_ImplSDL2_Data* bd = ImGui_ImplSDL2_GetBackendData();
@@ -636,9 +696,6 @@ void ImGui_ImplSDL2_NewFrame()
 
     ImGui_ImplSDL2_UpdateMouseData();
     ImGui_ImplSDL2_UpdateMouseCursor();
-
-    // Update game controllers (if enabled and available)
-    ImGui_ImplSDL2_UpdateGamepads();
 }
 
 #if defined(__clang__)
